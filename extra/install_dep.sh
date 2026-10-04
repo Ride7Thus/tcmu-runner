@@ -13,26 +13,31 @@ if [ y`uname`y = yLinuxy ]; then
 	case $ID in
 	fedora|rhel|centos)
 		# for generic
-		$SUDO yum install -y cmake make gcc
-		$SUDO yum install -y libnl3
-		$SUDO yum install -y libnl3-devel
-		$SUDO yum install -y glib2
-		$SUDO yum install -y glib2-devel
-	        $SUDO yum install -y zlib
-		$SUDO yum install -y zlib-devel
-		$SUDO yum install -y kmod
-		$SUDO yum install -y kmod-devel
-		$SUDO yum install -y gperftools-devel
+		$SUDO dnf install -y cmake make gcc
+		$SUDO dnf install -y libnl3
+		$SUDO dnf install -y libnl3-devel
+		$SUDO dnf install -y glib2
+		$SUDO dnf install -y glib2-devel
+	        $SUDO dnf install -y zlib
+		$SUDO dnf install -y zlib-devel
+		$SUDO dnf install -y kmod
+		$SUDO dnf install -y kmod-devel
+		$SUDO dnf install -y gperftools-devel
 
 		# for glusterfs
-		$SUDO yum install -y glusterfs-api
-		$SUDO yum install -y glusterfs-api-devel
+		$SUDO dnf install -y glusterfs-api
+		$SUDO dnf install -y glusterfs-api-devel
 		# for ceph
-		$SUDO yum install -y librados2
-		$SUDO yum install -y librados2-devel
-		$SUDO yum install -y librbd1
-		yum search librbd-devel | grep -q "N/S matched" && LIBRBD=librbd || LIBRBD=librbd1
-	        $SUDO yum install -y $LIBRBD-devel
+		$SUDO dnf install -y librados2
+		$SUDO dnf install -y librados2-devel
+		$SUDO dnf install -y librbd1
+		# Check if librbd-devel is available with different naming convention
+		if ! $SUDO dnf list available | grep -q "librbd-devel"; then
+			LIBRBD=librbd1
+		else
+			LIBRBD=librbd-devel
+		fi
+	        $SUDO dnf install -y $LIBRBD-devel
 		;;
 	debian)
 		# Update APT cache
@@ -77,9 +82,12 @@ if [ y`uname`y = yLinuxy ]; then
 		;;
 	*)
 		echo "TODO: distro not supported for now!"
+		exit 1
 		;;
 	esac
 else
 	echo "TODO: only Linux is supported for now!"
 	exit 1
 fi
+
+echo "Dependencies installed successfully"

@@ -1,0 +1,153 @@
+name: RPM Build for Multiple Distributions
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  release:
+    types: [ created ]
+
+jobs:
+  build-rpms:
+    strategy:
+      matrix:
+        distribution: [rocky-8, rocky-9, rocky-10, alma-8, alma-9, alma-10, centos-stream-8, centos-stream-9, centos-stream-10]
+        include:
+          - distribution: rocky-8
+            image: rockylinux:8
+            package_manager: dnf
+          - distribution: rocky-9
+            image: rockylinux:9
+            package_manager: dnf
+          - distribution: rocky-10
+            image: rockylinux:10
+            package_manager: dnf
+          - distribution: alma-8
+            image: almalinux:8
+            package_manager: dnf
+          - distribution: alma-9
+            image: almalinux:9
+            package_manager: dnf
+          - distribution: alma-10
+            image: almalinux:10
+            package_manager: dnf
+          - distribution: centos-stream-8
+            image: centos:stream8
+            package_manager: dnf
+          - distribution: centos-stream-9
+            image: centos:stream9
+            package_manager: dnf
+          - distribution: centos-stream-10
+            image: centos:stream10
+            package_manager: dnf
+
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up environment
+        run: |
+          echo "Distribution: ${{ matrix.distribution }}"
+          echo "Image: ${{ matrix.image }}"
+
+      - name: Install dependencies
+        run: |
+          # Install build dependencies
+          sudo dnf install -y rpm-build rpmdevtools cmake make gcc libnl3-devel glib2-devel zlib-devel kmod-devel gperftools-devel
+          
+          # Install specific dependencies for each distribution if needed
+          case "${{ matrix.distribution }}" in
+            rocky-8|alma-8|centos-stream-8)
+              sudo dnf install -y centos-release-scl
+              ;;
+            rocky-9|alma-9|centos-stream-9)
+              sudo dnf install -y centos-release-scl
+              ;;
+          esac
+
+      - name: Build RPMs
+        run: |
+          cd extra
+          chmod +x make_runnerrpms.sh
+          ./make_runnerrpms.sh
+          
+      - name: Upload RPM artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: rpm-${{ matrix.distribution }}
+          path: |
+            extra/rpmbuild/RPMS/**/*.rpm
+            extra/rpmbuild/SRPMS/**/*.rpm
+          if-no-files-found: error
+
+  build-rpms-without-features:
+    strategy:
+      matrix:
+        distribution: [rocky-8, rocky-9, rocky-10, alma-8, alma-9, alma-10, centos-stream-8, centos-stream-9, centos-stream-10]
+        feature: [rbd, glfs, qcow, zbc, fbo, tcmalloc]
+        include:
+          - distribution: rocky-8
+            image: rockylinux:8
+            package_manager: dnf
+          - distribution: rocky-9
+            image: rockylinux:9
+            package_manager: dnf
+          - distribution: rocky-10
+            image: rockylinux:10
+            package_manager: dnf
+          - distribution: alma-8
+            image: almalinux:8
+            package_manager: dnf
+          - distribution: alma-9
+            image: almalinux:9
+            package_manager: dnf
+          - distribution: alma-10
+            image: almalinux:10
+            package_manager: dnf
+          - distribution: centos-stream-8
+            image: centos:stream8
+            package_manager: dnf
+          - distribution: centos-stream-9
+            image: centos:stream9
+            package_manager: dnf
+          - distribution: centos-stream-10
+            image: centos:stream10
+            package_manager: dnf
+
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up environment
+        run: |
+          echo "Distribution: ${{ matrix.distribution }}"
+          echo "Feature: ${{ matrix.feature }}"
+
+      - name: Install dependencies
+        run: |
+          # Install build dependencies
+          sudo dnf install -y rpm-build rpmdevtools cmake make gcc libnl3-devel glib2-devel zlib-devel kmod-devel gperftools-devel
+
+      - name: Build RPMs without feature
+        run: |
+          cd extra
+          chmod +x make_runnerrpms.sh
+          ./make_runnerrpms.sh --without ${{ matrix.feature }}
+          
+      - name: Upload RPM artifacts (without feature)
+        uses: actions/upload-artifact@v4
+        with:
+          name: rpm-${{ matrix.distribution }}-without-${{ matrix.feature }}
+          path: |
+            extra/rpmbuild/RPMS/**/*.rpm
+            extra/rpmbuild/SRPMS/**/*.rpm
+          if-no-files-found: error

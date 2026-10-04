@@ -1,0 +1,255 @@
+stages:
+  - build
+
+variables:
+  # Common variables for all jobs
+  GIT_SUBMODULE_STRATEGY: recursive
+
+build-rpms:
+  stage: build
+  image: ${CI_REGISTRY_IMAGE}:${DISTRO_VERSION}
+  services:
+    - docker:dind
+  before_script:
+    - echo "Building RPMs for $DISTRO_NAME version $DISTRO_VERSION"
+    - |
+      if [ "$DISTRO_NAME" = "rocky" ] || [ "$DISTRO_NAME" = "alma" ] || [ "$DISTRO_NAME" = "centos-stream" ]; then
+        dnf install -y rpm-build rpmdevtools cmake make gcc libnl3-devel glib2-devel zlib-devel kmod-devel gperftools-devel
+        if [ "$DISTRO_VERSION" = "8" ]; then
+          dnf install -y centos-release-scl
+        fi
+      else
+        echo "Unsupported distribution: $DISTRO_NAME"
+        exit 1
+      fi
+
+  script:
+    - cd extra
+    - chmod +x make_runnerrpms.sh
+    - ./make_runnerrpms.sh
+    
+  artifacts:
+    paths:
+      - extra/rpmbuild/RPMS/**/*.rpm
+      - extra/rpmbuild/SRPMS/**/*.rpm
+    expire_in: 1 week
+
+build-rpms-without-features:
+  stage: build
+  image: ${CI_REGISTRY_IMAGE}:${DISTRO_VERSION}
+  services:
+    - docker:dind
+  before_script:
+    - echo "Building RPMs for $DISTRO_NAME version $DISTRO_VERSION without feature $FEATURE"
+    - |
+      if [ "$DISTRO_NAME" = "rocky" ] || [ "$DISTRO_NAME" = "alma" ] || [ "$DISTRO_NAME" = "centos-stream" ]; then
+        dnf install -y rpm-build rpmdevtools cmake make gcc libnl3-devel glib2-devel zlib-devel kmod-devel gperftools-devel
+        if [ "$DISTRO_VERSION" = "8" ]; then
+          dnf install -y centos-release-scl
+        fi
+      else
+        echo "Unsupported distribution: $DISTRO_NAME"
+        exit 1
+      fi
+
+  script:
+    - cd extra
+    - chmod +x make_runnerrpms.sh
+    - ./make_runnerrpms.sh --without $FEATURE
+    
+  artifacts:
+    paths:
+      - extra/rpmbuild/RPMS/**/*.rpm
+      - extra/rpmbuild/SRPMS/**/*.rpm
+    expire_in: 1 week
+
+# Matrix for all distributions and features
+include:
+  - variable:
+      DISTRO_NAME: "rocky"
+      DISTRO_VERSION: "8"
+    job:
+      name: "Build RPMs for Rocky Linux 8"
+      stage: build
+      only:
+        - main
+        - master
+      tags:
+        - docker
+
+  - variable:
+      DISTRO_NAME: "rocky"
+      DISTRO_VERSION: "9"
+    job:
+      name: "Build RPMs for Rocky Linux 9"
+      stage: build
+      only:
+        - main
+        - master
+      tags:
+        - docker
+
+  - variable:
+      DISTRO_NAME: "rocky"
+      DISTRO_VERSION: "10"
+    job:
+      name: "Build RPMs for Rocky Linux 10"
+      stage: build
+      only:
+        - main
+        - master
+      tags:
+        - docker
+
+  - variable:
+      DISTRO_NAME: "alma"
+      DISTRO_VERSION: "8"
+    job:
+      name: "Build RPMs for AlmaLinux 8"
+      stage: build
+      only:
+        - main
+        - master
+      tags:
+        - docker
+
+  - variable:
+      DISTRO_NAME: "alma"
+      DISTRO_VERSION: "9"
+    job:
+      name: "Build RPMs for AlmaLinux 9"
+      stage: build
+      only:
+        - main
+        - master
+      tags:
+        - docker
+
+  - variable:
+      DISTRO_NAME: "alma"
+      DISTRO_VERSION: "10"
+    job:
+      name: "Build RPMs for AlmaLinux 10"
+      stage: build
+      only:
+        - main
+        - master
+      tags:
+        - docker
+
+  - variable:
+      DISTRO_NAME: "centos-stream"
+      DISTRO_VERSION: "8"
+    job:
+      name: "Build RPMs for CentOS Stream 8"
+      stage: build
+      only:
+        - main
+        - master
+      tags:
+        - docker
+
+  - variable:
+      DISTRO_NAME: "centos-stream"
+      DISTRO_VERSION: "9"
+    job:
+      name: "Build RPMs for CentOS Stream 9"
+      stage: build
+      only:
+        - main
+        - master
+      tags:
+        - docker
+
+  - variable:
+      DISTRO_NAME: "centos-stream"
+      DISTRO_VERSION: "10"
+    job:
+      name: "Build RPMs for CentOS Stream 10"
+      stage: build
+      only:
+        - main
+        - master
+      tags:
+        - docker
+
+  # Additional jobs for building without features
+  - variable:
+      DISTRO_NAME: "rocky"
+      DISTRO_VERSION: "8"
+      FEATURE: "rbd"
+    job:
+      name: "Build RPMs for Rocky Linux 8 without RBD"
+      stage: build
+      only:
+        - main
+        - master
+      tags:
+        - docker
+
+  - variable:
+      DISTRO_NAME: "rocky"
+      DISTRO_VERSION: "8"
+      FEATURE: "glfs"
+    job:
+      name: "Build RPMs for Rocky Linux 8 without GLFS"
+      stage: build
+      only:
+        - main
+        - master
+      tags:
+        - docker
+
+  - variable:
+      DISTRO_NAME: "rocky"
+      DISTRO_VERSION: "8"
+      FEATURE: "qcow"
+    job:
+      name: "Build RPMs for Rocky Linux 8 without QCOW"
+      stage: build
+      only:
+        - main
+        - master
+      tags:
+        - docker
+
+  - variable:
+      DISTRO_NAME: "rocky"
+      DISTRO_VERSION: "8"
+      FEATURE: "zbc"
+    job:
+      name: "Build RPMs for Rocky Linux 8 without ZBC"
+      stage: build
+      only:
+        - main
+        - master
+      tags:
+        - docker
+
+  - variable:
+      DISTRO_NAME: "rocky"
+      DISTRO_VERSION: "8"
+      FEATURE: "fbo"
+    job:
+      name: "Build RPMs for Rocky Linux 8 without FBO"
+      stage: build
+      only:
+        - main
+        - master
+      tags:
+        - docker
+
+  - variable:
+      DISTRO_NAME: "rocky"
+      DISTRO_VERSION: "8"
+      FEATURE: "tcmalloc"
+    job:
+      name: "Build RPMs for Rocky Linux 8 without TCMalloc"
+      stage: build
+      only:
+        - main
+        - master
+      tags:
+        - docker
+
+  # Add similar jobs for other distributions and features as needed

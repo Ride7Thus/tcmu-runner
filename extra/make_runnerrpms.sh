@@ -46,7 +46,9 @@ sed -i "s/Version:.*$/Version:       ${VERSION}/" $SPEC
 
 # Delete all the _RC code if exists
 LN=`grep -n "define" $SPEC |grep _RC | awk -F: '{print $1}'`
-sed -i "${LN}d" $SPEC
+if [ ! -z "$LN" ]; then
+	sed -i "${LN}d" $SPEC
+fi
 sed -i "s/%{?_RC:%{_RC}}/0/g" $SPEC
 sed -i "s/%{?_RC:-%{_RC}}//g" $SPEC
 
@@ -62,4 +64,15 @@ cd $TOPDIR/extra
 rm -rf $TMPDIR
 
 # Build the RPMs
+echo "Building RPMs with parameters: $@"
 rpmbuild --define="_topdir $rpmbuild_path" -ba $rpmbuild_path/SPECS/tcmu-runner.spec "$@"
+
+# Check if build was successful
+if [ $? -eq 0 ]; then
+    echo "RPM build completed successfully"
+    echo "RPMs are located in: $rpmbuild_path/RPMS/"
+    echo "SRPMs are located in: $rpmbuild_path/SRPMS/"
+else
+    echo "RPM build failed"
+    exit 1
+fi
