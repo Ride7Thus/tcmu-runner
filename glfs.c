@@ -76,6 +76,7 @@ struct glfs_state {
 	glfs_fd_t *gfd;
 	gluster_server *hosts;
 	bool no_fencing;
+	bool native_zerofill;
 
 	/*
 	 * Current tcmu helper API reports WCE=1, but doesn't
@@ -502,6 +503,87 @@ static char* tcmu_get_path( struct tcmu_device *dev)
 	return config;
 }
 
+/*
+ * libgfapi does not expose the Gluster volume type directly. Inspect the
+ * client volfile and look for a translator type instead. glfs_get_volfile()
+ * returns the number of bytes by which a buffer is too small as a negative
+ * value, so a zero-length query gives us the required allocation size.
+ */
+static int gluster_volfile_has_xlator(glfs_t *fs, const char *xlator_type)
+{
+	char *volfile = NULL;
+	char *line;
+	char *saveptr = NULL;
+	char type[128];
+	ssize_t ret;
+	size_t len;
+	int found = 0;
+
+	ret = glfs_get_volfile(fs, NULL, 0);
+	if (!ret)
+		return -ENODATA;
+	if (ret > 0)
+		return -EIO;
+
+	len = (size_t)-ret;
+	volfile = calloc(1, len + 1);
+	if (!volfile)
+		return -ENOMEM;
+
+	ret = glfs_get_volfile(fs, volfile, len);
+	if (ret < 0) {
+		found = -EAGAIN;
+		goto out;
+	}
+	if (!ret || (size_t)ret > len) {
+		found = -EIO;
+		goto out;
+	}
+	volfile[ret] = '\0';
+
+	for (line = strtok_r(volfile, "\n", &saveptr); line;
+	     line = strtok_r(NULL, "\n", &saveptr)) {
+		type[0] = '\0';
+		if (sscanf(line, " type %127s", type) != 1)
+			continue;
+		if (!strcmp(type, xlator_type)) {
+			found = 1;
+			break;
+		}
+	}
+
+out:
+	free(volfile);
+	return found;
+}
+
+static void tcmu_glfs_detect_features(struct tcmu_device *dev,
+				      struct glfs_state *gfsp)
+{
+	int ret;
+
+	/* Fail safe: use generic WRITE SAME if graph inspection fails. */
+	gfsp->native_zerofill = false;
+
+	ret = gluster_volfile_has_xlator(gfsp->fs, "cluster/disperse");
+	if (ret < 0) {
+		tcmu_dev_warn(dev,
+			      "Could not inspect Gluster volfile: %s; native zerofill disabled\n",
+			      strerror(-ret));
+		return;
+	}
+
+	if (ret) {
+		tcmu_dev_info(dev,
+			      "Gluster disperse translator detected; native zerofill disabled\n");
+		return;
+	}
+
+	gfsp->native_zerofill = true;
+	tcmu_dev_info(dev,
+		      "No Gluster disperse translator detected; native zerofill enabled\n");
+}
+
 static int tcmu_glfs_open(struct tcmu_device *dev, bool reopen)
 {
 	struct glfs_state *gfsp;
@@ -518,6 +600,14 @@ static int tcmu_glfs_open(struct tcmu_device *dev, bool reopen)
 	tcmur_dev_set_private(dev, gfsp);
 	tcmu_dev_set_write_cache_enabled(dev, 1);
 
+	/*
+	 * GFAPI discard accepts byte offsets and lengths. At the SCSI layer,
+	 * one logical block is therefore the minimum valid alignment.
+	 * Keep this non-zero because WRITE SAME with UNMAP uses it as a
+	 * modulo divisor.
+	 */
+	tcmu_dev_set_unmap_gran_align(dev, 1);
+
 	config = tcmu_get_path(dev);
 	if (!config)
 		goto fail;
@@ -527,6 +617,8 @@ static int tcmu_glfs_open(struct tcmu_device *dev, bool reopen)
 		tcmu_dev_err(dev, "tcmu_create_glfs_object(config=%s) failed\n", config);
 		goto fail;
 	}
+
+	tcmu_glfs_detect_features(dev, gfsp);
 
 	gfsp->gfd = glfs_open(gfsp->fs, gfsp->hosts->path, ALLOWED_BSOFLAGS);
 	if (!gfsp->gfd) {
@@ -617,9 +709,13 @@ static void glfs_async_cbk(glfs_fd_t *fd, ssize_t ret, void *data)
 	struct glfs_state *gfsp = tcmur_dev_get_private(dev);
 #endif
 	size_t length = cookie->length;
-	int err = -errno;
+	int saved_errno = errno;
+	int err = -saved_errno;
 
 	if (ret < 0) {
+		tcmu_dev_err(dev,
+			     "GFAPI async op=%d failed: errno=%d (%s)\n",
+			     cookie->op, saved_errno, strerror(saved_errno));
 		switch (err) {
 		case -ETIMEDOUT:
 			/*
@@ -856,6 +952,12 @@ static int tcmu_glfs_writesame(struct tcmu_device *dev,
 	glfs_cbk_cookie *cookie;
 	ssize_t ret;
 
+	if (!state->native_zerofill) {
+		tcmu_dev_dbg(dev,
+			     "Native zerofill disabled for this volume; using generic WRITE SAME\n");
+		return TCMU_STS_NOT_HANDLED;
+	}
+
 	if (!tcmu_iovec_zeroed(iov, iov_cnt)) {
 		tcmu_dev_warn(dev,
 			      "Received none zeroed data, will fall back to writesame emulator instead.\n");
@@ -874,16 +976,23 @@ static int tcmu_glfs_writesame(struct tcmu_device *dev,
 
 	ret = glfs_zerofill_async(state->gfd, offset, length, glfs_async_cbk, cookie);
 	if (ret < 0) {
-		tcmu_dev_err(dev, "glfs_zerofill_async(vol=%s, file=%s) failed: %m\n",
-		             state->hosts->volname, state->hosts->path);
-		goto out;
+		int saved_errno = errno;
+
+		tcmu_dev_err(dev,
+			     "glfs_zerofill_async(vol=%s, file=%s, offset=%"PRIu64
+			     ", length=%"PRIu64") failed: errno=%d (%s)\n",
+			     state->hosts->volname, state->hosts->path,
+			     offset, length, saved_errno, strerror(saved_errno));
+		free(cookie);
+
+		/* No async request was queued, so generic fallback is safe. */
+		if (saved_errno == ENOTSUP || saved_errno == EOPNOTSUPP ||
+		    saved_errno == ENOSYS)
+			return TCMU_STS_NOT_HANDLED;
+		return TCMU_STS_WR_ERR;
 	}
 
 	return TCMU_STS_OK;
-
-out:
-	free(cookie);
-	return TCMU_STS_NO_RESOURCE;
 }
 
 #if GFAPI_VERSION766

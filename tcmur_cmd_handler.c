@@ -684,6 +684,13 @@ static int handle_unmap_in_writesame(struct tcmu_device *dev,
 	struct unmap_state *state;
 	int ret;
 
+	/* Never use a zero alignment as a modulo divisor. */
+	if (!align) {
+		tcmu_dev_warn(dev,
+			      "UNMAP granularity alignment is 0; falling back to WRITE SAME without UNMAP\n");
+		return TCMU_STS_NOT_HANDLED;
+	}
+
 	/* If not aligned then falls back to the writesame without unmap */
 	if (lba % align || nlbas % align) {
 		tcmu_dev_dbg(dev,
@@ -761,9 +768,20 @@ static int handle_writesame(struct tcmu_device *dev, struct tcmulib_cmd *cmd)
 	if (rhandler->writesame) {
 		tcmur_cmd->cmd_state = rhandler->writesame;
 		tcmur_cmd->done = handle_generic_cbk;
-		return aio_request_schedule(dev, tcmur_cmd,
-					    tcmur_writesame_work_fn,
-					    tcmur_cmd_complete);
+		ret = aio_request_schedule(dev, tcmur_cmd,
+					   tcmur_writesame_work_fn,
+					   tcmur_cmd_complete);
+		if (ret != TCMU_STS_NOT_HANDLED)
+			return ret;
+
+		/*
+		 * The handler declined WRITE SAME synchronously. Clear the
+		 * temporary callback state and continue with the generic emulator.
+		 */
+		tcmur_cmd->cmd_state = NULL;
+		tcmur_cmd->done = NULL;
+		tcmu_dev_dbg(dev,
+			     "Handler declined WRITE SAME; using generic emulator\n");
 	}
 
 	max_xfer_length = tcmu_dev_get_max_xfer_len(dev) * block_size;
