@@ -35,7 +35,7 @@ Name:          tcmu-runner
 Summary:       A daemon that handles the userspace side of the LIO TCM-User backstore
 Group:         System Environment/Daemons
 License:       ASL 2.0 or LGPLv2+
-Version:       1.6.2
+Version:       1.6.3
 URL:           https://github.com/open-iscsi/tcmu-runner
 
 #%define _RC
@@ -150,3 +150,17 @@ Development header(s) for developing against libtcmu.
 
 %files -n libtcmu-devel
 %{_libdir}/libtcmu*.so
+
+%changelog
+* Mon Nov 23 2026 Ride7Thus <dred924@gmail.com> - 1.6.3
+- libtcmu: fix getting the next command from the ring on aarch64
+- glfs: serve WRITE SAME according to the Gluster volume type; native
+  zerofill is not used on dispersed volumes, where it failed with
+  HARDWARE ERROR
+- glfs: fall back to the WRITE SAME emulation if zerofill is rejected
+  with EOPNOTSUPP, synchronously or asynchronously
+- glfs: fix UNMAP splitting with a zero UNMAP granularity alignment
+- glfs: keep backing files fully allocated on dispersed volumes: do not
+  advertise UNMAP there and do not punch holes for UNMAP or WRITE SAME
+  with the UNMAP bit
+- build: RPM CI for EL8, EL9 and EL10 (glfs is not built on EL10)
