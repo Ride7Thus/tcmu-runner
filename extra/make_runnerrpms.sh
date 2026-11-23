@@ -18,10 +18,20 @@ if [ ! -e $TOPDIR/.git ]; then
 	echo ""
 	echo "For now this will only support the git repo code."
 	echo ""
-	exit
+	exit 1
 fi
 
-VERSION=`git describe --tags --match "v[0-9]*"`
+VERSION=`git describe --tags --match "v[0-9]*" 2>/dev/null`
+if [ -z "$VERSION" ]; then
+	# No release tags (e.g. in a fork): use the version from CMakeLists.txt
+	# in the same format git describe would give: X.Y.Z.<commits>.g<hash>
+	BASE_VERSION=`sed -n 's/^set(VERSION \([0-9.]*\))$/\1/p' $TOPDIR/CMakeLists.txt`
+	if [ -z "$BASE_VERSION" ]; then
+		echo "Could not determine the version from git tags or CMakeLists.txt"
+		exit 1
+	fi
+	VERSION=$BASE_VERSION.`git rev-list --count HEAD`.g`git rev-parse --short HEAD`
+fi
 VERSION=`echo $VERSION | sed "s/-/./g"`
 VERSION=`echo $VERSION | sed "s/v//"`
 TCMURUNNER_TAR=tcmu-runner-$VERSION.tar.gz
@@ -52,16 +62,16 @@ fi
 sed -i "s/%{?_RC:%{_RC}}/0/g" $SPEC
 sed -i "s/%{?_RC:-%{_RC}}//g" $SPEC
 
-# Generate the source package
-TMPDIR=/tmp/tcmu-runner-build
+# Generate the source package from the HEAD commit. git archive works in
+# place, so unlike a local git clone it is not refused by the
+# safe.directory check when the repo is owned by another user (CI
+# containers).
 PKG_NAME=tcmu-runner-$VERSION
-mkdir -p $TMPDIR/$PKG_NAME
-git clone $TOPDIR/.git $TMPDIR/$PKG_NAME
-rm -rf $TMPDIR/$PKG_NAME/.git*
-cd $TMPDIR
-tar -czvf $rpmbuild_path/SOURCES/$TCMURUNNER_TAR $PKG_NAME 2&> /dev/null
-cd $TOPDIR/extra
-rm -rf $TMPDIR
+if ! git -C $TOPDIR archive --format=tar.gz --prefix=$PKG_NAME/ \
+		-o $rpmbuild_path/SOURCES/$TCMURUNNER_TAR HEAD; then
+	echo "Failed to create the source tarball"
+	exit 1
+fi
 
 # Build the RPMs
 echo "Building RPMs with parameters: $@"
