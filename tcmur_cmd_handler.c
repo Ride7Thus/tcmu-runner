@@ -461,7 +461,11 @@ static int handle_unmap(struct tcmu_device *dev, struct tcmulib_cmd *origcmd)
 	uint16_t dl, bddl;
 	int ret;
 
-	if (!rhandler->unmap)
+	/*
+	 * A handler may disable UNMAP per device (e.g. glfs on dispersed
+	 * volumes); do not rely on initiators honouring VPD page B2h.
+	 */
+	if (!rhandler->unmap || !tcmu_dev_get_unmap_enabled(dev))
 		return TCMU_STS_INVALID_CMD;
 
 	/*
@@ -759,7 +763,12 @@ static int handle_writesame(struct tcmu_device *dev, struct tcmulib_cmd *cmd)
 	if (ret)
 		return ret;
 
-	if (rhandler->unmap && (cmd->cdb[1] & 0x08)) {
+	/*
+	 * If UNMAP is disabled for this device, WRITE SAME with the UNMAP bit
+	 * is served as a regular WRITE SAME, which SBC permits.
+	 */
+	if (rhandler->unmap && tcmu_dev_get_unmap_enabled(dev) &&
+	    (cmd->cdb[1] & 0x08)) {
 		ret = handle_unmap_in_writesame(dev, cmd);
 		if (ret != TCMU_STS_NOT_HANDLED)
 			return ret;

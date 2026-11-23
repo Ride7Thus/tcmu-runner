@@ -76,14 +76,25 @@ struct glfs_state {
 	glfs_fd_t *gfd;
 	gluster_server *hosts;
 	bool no_fencing;
-	bool native_zerofill;
+	bool disperse;
 
 	/*
-	 * Current tcmu helper API reports WCE=1, but doesn't
-	 * implement inquiry VPD 0xb2, so clients will not know UNMAP
-	 * or WRITE_SAME are supported. TODO: fix this
+	 * Cleared from the GFAPI callback thread if the volume rejects
+	 * zerofill asynchronously, read from the command path. Access it
+	 * only via glfs_native_zerofill()/glfs_disable_native_zerofill().
 	 */
+	bool native_zerofill;
 };
+
+static inline bool glfs_native_zerofill(struct glfs_state *gfsp)
+{
+	return __atomic_load_n(&gfsp->native_zerofill, __ATOMIC_RELAXED);
+}
+
+static inline void glfs_disable_native_zerofill(struct glfs_state *gfsp)
+{
+	__atomic_store_n(&gfsp->native_zerofill, false, __ATOMIC_RELAXED);
+}
 
 typedef struct glfs_cbk_cookie {
 	struct tcmu_device *dev;
@@ -574,12 +585,26 @@ static void tcmu_glfs_detect_features(struct tcmu_device *dev,
 	}
 
 	if (ret) {
+		gfsp->disperse = true;
 		tcmu_dev_info(dev,
 			      "Gluster disperse translator detected; native zerofill disabled\n");
+
+		/*
+		 * Block files on dispersed volumes must stay fully allocated
+		 * (e.g. gluster-block "prealloc full"). UNMAP and WRITE SAME
+		 * with UNMAP would punch holes through glfs_discard() and turn
+		 * the file back into a sparse one. Stop advertising logical
+		 * block provisioning (LBPU/LBPWS in VPD B0h/B2h), so initiators
+		 * zero blocks with regular writes instead.
+		 */
+		tcmu_dev_set_unmap_enabled(dev, false);
+		tcmu_dev_info(dev,
+			      "UNMAP disabled to keep the backing file fully allocated\n");
 		return;
 	}
 
 	gfsp->native_zerofill = true;
+	tcmu_dev_set_unmap_enabled(dev, true);
 	tcmu_dev_info(dev,
 		      "No Gluster disperse translator detected; native zerofill enabled\n");
 }
@@ -632,6 +657,9 @@ static int tcmu_glfs_open(struct tcmu_device *dev, bool reopen)
 	if (ret) {
 		if (errno == EINVAL) {
 			gfsp->no_fencing = true;
+			tcmu_dev_info(dev,
+				      "Mandatory locks are not enforced on vol=%s; lock based fencing disabled\n",
+				      gfsp->hosts->volname);
 		} else {
 			tcmu_dev_err(dev,"glfs_fsetxattr failed: %m\n");
 			goto close;
@@ -644,6 +672,19 @@ static int tcmu_glfs_open(struct tcmu_device *dev, bool reopen)
 		tcmu_dev_warn(dev, "glfs_lstat failed: %m\n");
 		goto close;
 	}
+
+	/*
+	 * Dispersed volumes handle thin provisioned block files poorly, the
+	 * backing file is expected to be fully preallocated. Allow some slack
+	 * for rounding of the allocated size reported by the translators.
+	 */
+	if (gfsp->disperse && st.st_size > 0 &&
+	    (uint64_t)st.st_blocks * 512 < (uint64_t)st.st_size / 100 * 95)
+		tcmu_dev_warn(dev,
+			      "Backing file %s on dispersed vol=%s is sparse (allocated %llu of %lld bytes); create it fully preallocated (gluster-block \"prealloc full\")\n",
+			      gfsp->hosts->path, gfsp->hosts->volname,
+			      (unsigned long long)st.st_blocks * 512,
+			      (long long)st.st_size);
 
 	dev_size = tcmu_dev_get_num_lbas(dev) * block_size;
 	if (st.st_size != dev_size) {
@@ -705,17 +746,35 @@ static void glfs_async_cbk(glfs_fd_t *fd, ssize_t ret, void *data)
 	glfs_cbk_cookie *cookie = data;
 	struct tcmu_device *dev = cookie->dev;
 	struct tcmur_cmd *tcmur_cmd = cookie->tcmur_cmd;
-#if GFAPI_VERSION766
 	struct glfs_state *gfsp = tcmur_dev_get_private(dev);
-#endif
 	size_t length = cookie->length;
 	int saved_errno = errno;
 	int err = -saved_errno;
 
-	if (ret < 0) {
-		tcmu_dev_err(dev,
-			     "GFAPI async op=%d failed: errno=%d (%s)\n",
-			     cookie->op, saved_errno, strerror(saved_errno));
+	if (ret < 0 && cookie->op == TCMU_GLFS_WRITESAME &&
+	    (err == -EOPNOTSUPP || err == -ENOTSUP || err == -ENOSYS)) {
+		/*
+		 * Some translator in the graph rejected zerofill. Switch this
+		 * device to the generic WRITE SAME emulation and let the
+		 * initiator retry the command; zeroing the same range again
+		 * is idempotent, so a partially applied zerofill is harmless.
+		 */
+		glfs_disable_native_zerofill(gfsp);
+		tcmu_dev_warn(dev,
+			      "glfs_zerofill_async(vol=%s, file=%s) is not supported: %s; native zerofill disabled\n",
+			      gfsp->hosts->volname, gfsp->hosts->path,
+			      strerror(saved_errno));
+		ret = TCMU_STS_BUSY;
+	} else if (ret < 0) {
+		/*
+		 * Lock loss and disconnects fail every in-flight request
+		 * during failover; they are logged below at debug level.
+		 */
+		if ((err != -EAGAIN && err != -EBUSY && err != -ENOTCONN) ||
+		    gfsp->no_fencing)
+			tcmu_dev_err(dev,
+				     "GFAPI async op=%d failed: errno=%d (%s)\n",
+				     cookie->op, saved_errno, strerror(saved_errno));
 		switch (err) {
 		case -ETIMEDOUT:
 			/*
@@ -952,7 +1011,7 @@ static int tcmu_glfs_writesame(struct tcmu_device *dev,
 	glfs_cbk_cookie *cookie;
 	ssize_t ret;
 
-	if (!state->native_zerofill) {
+	if (!glfs_native_zerofill(state)) {
 		tcmu_dev_dbg(dev,
 			     "Native zerofill disabled for this volume; using generic WRITE SAME\n");
 		return TCMU_STS_NOT_HANDLED;
@@ -1017,7 +1076,7 @@ static int tcmu_glfs_lock(struct tcmu_device *dev, uint16_t tag)
 	if (state->no_fencing)
 		return 0;
 
-	lock.l_type = F_WRLCK | F_RDLCK;
+	lock.l_type = F_WRLCK;
 	lock.l_whence = SEEK_SET;
 	lock.l_start = 0;
 	lock.l_len = 0;
