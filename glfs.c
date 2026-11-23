@@ -967,7 +967,7 @@ static int tcmu_glfs_writesame(struct tcmu_device *dev,
 	cookie = calloc(1, sizeof(*cookie));
 	if (!cookie) {
 		tcmu_dev_err(dev, "Could not allocate cookie: %m\n");
-		goto out;
+		return TCMU_STS_NO_RESOURCE;
 	}
 	cookie->dev = dev;
 	cookie->tcmur_cmd = tcmur_cmd;
