@@ -44,37 +44,8 @@ jobs:
       # git must be present before checkout, otherwise actions/checkout
       # downloads a tarball without .git and make_runnerrpms.sh refuses
       # to run.
-      - name: Install dependencies
-        run: |
-          . /etc/os-release
-          EL=${VERSION_ID%%.*}
-          echo "EL=$EL" >> "$GITHUB_ENV"
-
-          dnf install -y dnf-plugins-core epel-release
-          case "$EL" in
-            8)
-              # CentOS 8 SIG repositories are end of life and break dnf;
-              # glusterfs-api-devel and librbd1-devel ship in AppStream.
-              dnf config-manager --set-enabled powertools
-              ;;
-            9)
-              dnf config-manager --set-enabled crb
-              dnf install -y centos-release-gluster11 centos-release-ceph-squid
-              ;;
-            *)
-              # There is no CentOS Storage SIG Gluster release for EL10
-              # yet, so the glfs handler cannot be built there.
-              dnf config-manager --set-enabled crb
-              dnf install -y centos-release-ceph-squid
-              ;;
-          esac
-
-          GLUSTER=glusterfs-api-devel
-          [ "$EL" -ge 10 ] && GLUSTER=
-
-          dnf install -y git rpm-build rpmdevtools cmake make gcc \
-            libnl3-devel glib2-devel zlib-devel kmod-devel gperftools-devel \
-            librbd1-devel librados2-devel $GLUSTER
+      - name: Install git
+        run: dnf install -y git
 
       - name: Checkout code
         uses: actions/checkout@v4
@@ -83,20 +54,12 @@ jobs:
           # Full history for the commit count in the package version.
           fetch-depth: 0
 
+      # Shared with .gitlab-ci.yml.
+      - name: Install dependencies
+        run: extra/ci_install_deps.sh
+
       - name: Build RPMs
-        run: |
-          # The workspace is owned by the runner user, not by root in the
-          # container.
-          git config --global --add safe.directory "$GITHUB_WORKSPACE"
-
-          ARGS=
-          [ "${{ matrix.variant }}" != full ] && ARGS="--without ${{ matrix.variant }}"
-          if [ "$EL" -ge 10 ] && [ "${{ matrix.variant }}" != glfs ]; then
-            ARGS="$ARGS --without glfs"
-          fi
-
-          cd extra
-          ./make_runnerrpms.sh $ARGS
+        run: extra/ci_build_rpms.sh ${{ matrix.variant }}
 
       - name: Upload RPM artifacts
         uses: actions/upload-artifact@v4

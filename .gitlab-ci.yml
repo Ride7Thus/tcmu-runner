@@ -1,255 +1,76 @@
+# Build tcmu-runner RPMs for EL8, EL9 and EL10.
+#
+# Requires runners with the "common" tag and the Docker (or Kubernetes)
+# executor. The RPMs are kept as job artifacts:
+#   Build > Pipelines > <pipeline> > <job> > Download artifacts
+#
+# Every pipeline builds all handlers on every distribution ("full").
+# To also build each package without one of the features, run a pipeline
+# with the variable BUILD_VARIANTS=1 (Build > Pipelines > Run pipeline),
+# or set it in a pipeline schedule.
+
+workflow:
+  rules:
+    # Avoid duplicate branch and merge request pipelines.
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH && $CI_OPEN_MERGE_REQUESTS
+      when: never
+    - if: $CI_COMMIT_BRANCH
+    - if: $CI_COMMIT_TAG
+
 stages:
   - build
 
+default:
+  tags:
+    - common
+  interruptible: true
+
 variables:
-  # Common variables for all jobs
-  GIT_SUBMODULE_STRATEGY: recursive
+  # Full history and tags: the package version comes from git describe,
+  # or from the commit count when there are no release tags.
+  GIT_DEPTH: "0"
 
-build-rpms:
+.rpm:
   stage: build
-  image: ${CI_REGISTRY_IMAGE}:${DISTRO_VERSION}
-  services:
-    - docker:dind
-  before_script:
-    - echo "Building RPMs for $DISTRO_NAME version $DISTRO_VERSION"
-    - |
-      if [ "$DISTRO_NAME" = "rocky" ] || [ "$DISTRO_NAME" = "alma" ] || [ "$DISTRO_NAME" = "centos-stream" ]; then
-        dnf install -y rpm-build rpmdevtools cmake make gcc libnl3-devel glib2-devel zlib-devel kmod-devel gperftools-devel
-        if [ "$DISTRO_VERSION" = "8" ]; then
-          dnf install -y centos-release-scl
-        fi
-      else
-        echo "Unsupported distribution: $DISTRO_NAME"
-        exit 1
-      fi
-
+  image: $IMAGE
   script:
-    - cd extra
-    - chmod +x make_runnerrpms.sh
-    - ./make_runnerrpms.sh
-    
+    - extra/ci_install_deps.sh
+    - extra/ci_build_rpms.sh "$VARIANT"
   artifacts:
+    name: "tcmu-runner-$DISTRO-$VARIANT-$CI_COMMIT_REF_SLUG"
     paths:
-      - extra/rpmbuild/RPMS/**/*.rpm
-      - extra/rpmbuild/SRPMS/**/*.rpm
-    expire_in: 1 week
+      - extra/rpmbuild/RPMS/
+      - extra/rpmbuild/SRPMS/
+    expire_in: 30 days
 
-build-rpms-without-features:
-  stage: build
-  image: ${CI_REGISTRY_IMAGE}:${DISTRO_VERSION}
-  services:
-    - docker:dind
-  before_script:
-    - echo "Building RPMs for $DISTRO_NAME version $DISTRO_VERSION without feature $FEATURE"
-    - |
-      if [ "$DISTRO_NAME" = "rocky" ] || [ "$DISTRO_NAME" = "alma" ] || [ "$DISTRO_NAME" = "centos-stream" ]; then
-        dnf install -y rpm-build rpmdevtools cmake make gcc libnl3-devel glib2-devel zlib-devel kmod-devel gperftools-devel
-        if [ "$DISTRO_VERSION" = "8" ]; then
-          dnf install -y centos-release-scl
-        fi
-      else
-        echo "Unsupported distribution: $DISTRO_NAME"
-        exit 1
-      fi
+# centos:streamN images are not published on Docker Hub, use quay.io.
+rpm:
+  extends: .rpm
+  variables:
+    VARIANT: full
+  parallel:
+    matrix:
+      - { DISTRO: rocky-8, IMAGE: "rockylinux:8" }
+      - { DISTRO: rocky-9, IMAGE: "rockylinux:9" }
+      - { DISTRO: rocky-10, IMAGE: "rockylinux:10" }
+      - { DISTRO: alma-8, IMAGE: "almalinux:8" }
+      - { DISTRO: alma-9, IMAGE: "almalinux:9" }
+      - { DISTRO: alma-10, IMAGE: "almalinux:10" }
+      - { DISTRO: centos-stream-9, IMAGE: "quay.io/centos/centos:stream9" }
+      - { DISTRO: centos-stream-10, IMAGE: "quay.io/centos/centos:stream10" }
 
-  script:
-    - cd extra
-    - chmod +x make_runnerrpms.sh
-    - ./make_runnerrpms.sh --without $FEATURE
-    
-  artifacts:
-    paths:
-      - extra/rpmbuild/RPMS/**/*.rpm
-      - extra/rpmbuild/SRPMS/**/*.rpm
-    expire_in: 1 week
-
-# Matrix for all distributions and features
-include:
-  - variable:
-      DISTRO_NAME: "rocky"
-      DISTRO_VERSION: "8"
-    job:
-      name: "Build RPMs for Rocky Linux 8"
-      stage: build
-      only:
-        - main
-        - master
-      tags:
-        - docker
-
-  - variable:
-      DISTRO_NAME: "rocky"
-      DISTRO_VERSION: "9"
-    job:
-      name: "Build RPMs for Rocky Linux 9"
-      stage: build
-      only:
-        - main
-        - master
-      tags:
-        - docker
-
-  - variable:
-      DISTRO_NAME: "rocky"
-      DISTRO_VERSION: "10"
-    job:
-      name: "Build RPMs for Rocky Linux 10"
-      stage: build
-      only:
-        - main
-        - master
-      tags:
-        - docker
-
-  - variable:
-      DISTRO_NAME: "alma"
-      DISTRO_VERSION: "8"
-    job:
-      name: "Build RPMs for AlmaLinux 8"
-      stage: build
-      only:
-        - main
-        - master
-      tags:
-        - docker
-
-  - variable:
-      DISTRO_NAME: "alma"
-      DISTRO_VERSION: "9"
-    job:
-      name: "Build RPMs for AlmaLinux 9"
-      stage: build
-      only:
-        - main
-        - master
-      tags:
-        - docker
-
-  - variable:
-      DISTRO_NAME: "alma"
-      DISTRO_VERSION: "10"
-    job:
-      name: "Build RPMs for AlmaLinux 10"
-      stage: build
-      only:
-        - main
-        - master
-      tags:
-        - docker
-
-  - variable:
-      DISTRO_NAME: "centos-stream"
-      DISTRO_VERSION: "8"
-    job:
-      name: "Build RPMs for CentOS Stream 8"
-      stage: build
-      only:
-        - main
-        - master
-      tags:
-        - docker
-
-  - variable:
-      DISTRO_NAME: "centos-stream"
-      DISTRO_VERSION: "9"
-    job:
-      name: "Build RPMs for CentOS Stream 9"
-      stage: build
-      only:
-        - main
-        - master
-      tags:
-        - docker
-
-  - variable:
-      DISTRO_NAME: "centos-stream"
-      DISTRO_VERSION: "10"
-    job:
-      name: "Build RPMs for CentOS Stream 10"
-      stage: build
-      only:
-        - main
-        - master
-      tags:
-        - docker
-
-  # Additional jobs for building without features
-  - variable:
-      DISTRO_NAME: "rocky"
-      DISTRO_VERSION: "8"
-      FEATURE: "rbd"
-    job:
-      name: "Build RPMs for Rocky Linux 8 without RBD"
-      stage: build
-      only:
-        - main
-        - master
-      tags:
-        - docker
-
-  - variable:
-      DISTRO_NAME: "rocky"
-      DISTRO_VERSION: "8"
-      FEATURE: "glfs"
-    job:
-      name: "Build RPMs for Rocky Linux 8 without GLFS"
-      stage: build
-      only:
-        - main
-        - master
-      tags:
-        - docker
-
-  - variable:
-      DISTRO_NAME: "rocky"
-      DISTRO_VERSION: "8"
-      FEATURE: "qcow"
-    job:
-      name: "Build RPMs for Rocky Linux 8 without QCOW"
-      stage: build
-      only:
-        - main
-        - master
-      tags:
-        - docker
-
-  - variable:
-      DISTRO_NAME: "rocky"
-      DISTRO_VERSION: "8"
-      FEATURE: "zbc"
-    job:
-      name: "Build RPMs for Rocky Linux 8 without ZBC"
-      stage: build
-      only:
-        - main
-        - master
-      tags:
-        - docker
-
-  - variable:
-      DISTRO_NAME: "rocky"
-      DISTRO_VERSION: "8"
-      FEATURE: "fbo"
-    job:
-      name: "Build RPMs for Rocky Linux 8 without FBO"
-      stage: build
-      only:
-        - main
-        - master
-      tags:
-        - docker
-
-  - variable:
-      DISTRO_NAME: "rocky"
-      DISTRO_VERSION: "8"
-      FEATURE: "tcmalloc"
-    job:
-      name: "Build RPMs for Rocky Linux 8 without TCMalloc"
-      stage: build
-      only:
-        - main
-        - master
-      tags:
-        - docker
-
-  # Add similar jobs for other distributions and features as needed
+rpm-without:
+  extends: .rpm
+  rules:
+    - if: $BUILD_VARIANTS == "1"
+  parallel:
+    matrix:
+      - { DISTRO: rocky-8, IMAGE: "rockylinux:8", VARIANT: [rbd, glfs, qcow, zbc, fbo, tcmalloc] }
+      - { DISTRO: rocky-9, IMAGE: "rockylinux:9", VARIANT: [rbd, glfs, qcow, zbc, fbo, tcmalloc] }
+      - { DISTRO: rocky-10, IMAGE: "rockylinux:10", VARIANT: [rbd, glfs, qcow, zbc, fbo, tcmalloc] }
+      - { DISTRO: alma-8, IMAGE: "almalinux:8", VARIANT: [rbd, glfs, qcow, zbc, fbo, tcmalloc] }
+      - { DISTRO: alma-9, IMAGE: "almalinux:9", VARIANT: [rbd, glfs, qcow, zbc, fbo, tcmalloc] }
+      - { DISTRO: alma-10, IMAGE: "almalinux:10", VARIANT: [rbd, glfs, qcow, zbc, fbo, tcmalloc] }
+      - { DISTRO: centos-stream-9, IMAGE: "quay.io/centos/centos:stream9", VARIANT: [rbd, glfs, qcow, zbc, fbo, tcmalloc] }
+      - { DISTRO: centos-stream-10, IMAGE: "quay.io/centos/centos:stream10", VARIANT: [rbd, glfs, qcow, zbc, fbo, tcmalloc] }
