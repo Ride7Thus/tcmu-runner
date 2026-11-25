@@ -1,0 +1,200 @@
+# Prometheus alerting rules for tcmu-runner and LIO, see docs/monitoring.md.
+#
+# Thresholds are starting points: adjust them to your storage and to the
+# metrics_interval / scrape interval in use.
+
+groups:
+  - name: tcmu-runner-exporter
+    rules:
+      - alert: TcmuRunnerMetricsMissing
+        expr: |
+          up{job="node"} == 1
+            unless on (instance) tcmu_runner_info
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "No tcmu-runner metrics from {{ $labels.instance }}"
+          description: >-
+            node_exporter is up but serves no tcmu-runner metrics: tcmu-runner
+            is stopped, metrics_file is not set, or it points outside the
+            textfile collector directory.
+
+      - alert: TcmuRunnerMetricsStale
+        expr: time() - tcmu_metrics_timestamp_seconds > 120
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "tcmu-runner metrics on {{ $labels.instance }} are stale"
+          description: >-
+            The metrics file was last written {{ $value | humanizeDuration }}
+            ago. The exporter runs at idle priority: a host saturated by
+            other work delays it, a hung tcmu-runner stops it.
+
+      - alert: TcmuRunnerMetricsWriteErrors
+        expr: increase(tcmu_metrics_write_errors_total[15m]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "tcmu-runner cannot write its metrics file on {{ $labels.instance }}"
+          description: "Check permissions and SELinux labels of the textfile collector directory."
+
+  - name: tcmu-runner-io
+    rules:
+      - alert: TcmuHardwareErrors
+        expr: |
+          sum by (instance, device) (
+            increase(tcmu_commands_total{status="hardware_error"}[5m])
+          ) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.device }} on {{ $labels.instance }} returns HARDWARE ERROR"
+          description: >-
+            {{ $value | humanize }} commands completed with HARDWARE ERROR in
+            5 minutes. Initiators see I/O errors. Check tcmu_glfs_errors_total
+            and the tcmu-runner log.
+
+      - alert: TcmuCommandErrors
+        expr: |
+          sum by (instance, device, status) (
+            increase(tcmu_commands_total{status=~"read_error|write_error|timeout|fenced|no_resource|miscompare"}[5m])
+          ) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.device }} on {{ $labels.instance }}: {{ $labels.status }}"
+          description: "{{ $value | humanize }} commands failed with {{ $labels.status }} in 5 minutes."
+
+      - alert: TcmuCommandTimeouts
+        expr: increase(tcmu_cmd_timed_out_total[5m]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "Commands time out on {{ $labels.device }} ({{ $labels.instance }})"
+          description: "Commands exceeded cmd_time_out; the backend is slow or unreachable."
+
+      - alert: TcmuWriteLatencyHigh
+        expr: |
+          histogram_quantile(0.99,
+            sum by (instance, device, le) (
+              rate(tcmu_command_duration_seconds_bucket{op="write"}[5m])
+            )
+          ) > 0.2
+          and on (instance, device)
+          sum by (instance, device) (rate(tcmu_command_duration_seconds_count{op="write"}[5m])) > 1
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High write latency on {{ $labels.device }} ({{ $labels.instance }})"
+          description: "p99 write latency is {{ $value | humanizeDuration }}."
+
+      - alert: TcmuInflightHigh
+        expr: tcmu_inflight_commands > 128
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Commands pile up on {{ $labels.device }} ({{ $labels.instance }})"
+          description: "{{ $value }} commands are waiting for the backend."
+
+  - name: tcmu-runner-ha
+    rules:
+      - alert: TcmuLockLost
+        expr: increase(tcmu_lock_lost_total[10m]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.device }} lost its lock on {{ $labels.instance }}"
+          description: "A path failover happened, or another gateway took the device."
+
+      - alert: TcmuLockFlapping
+        expr: increase(tcmu_lock_lost_total[30m]) > 3
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.device }} lock flaps on {{ $labels.instance }}"
+          description: >-
+            The lock was lost {{ $value | humanize }} times in 30 minutes:
+            gateways fight for the device. Check multipath and network.
+
+      - alert: TcmuMultipleLockOwners
+        expr: sum by (device) (tcmu_lock_state{state="write_locked"}) > 1
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.device }} is write locked by {{ $value }} gateways"
+          description: >-
+            More than one gateway believes it owns the device. Without
+            fencing this corrupts data. Check that mandatory locks are
+            enforced on the Gluster volume.
+
+      - alert: TcmuDeviceInRecovery
+        expr: tcmu_in_recovery == 1
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.device }} on {{ $labels.instance }} keeps reopening"
+          description: "tcmu-runner cannot reopen the device; I/O to it is blocked."
+
+      - alert: TcmuBackendConnectionLost
+        expr: increase(tcmu_conn_lost_total[10m]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.device }} lost its backend connection on {{ $labels.instance }}"
+
+  - name: tcmu-runner-glfs
+    rules:
+      - alert: TcmuGlfsErrors
+        expr: |
+          sum by (instance, device, op, errno) (
+            increase(tcmu_glfs_errors_total[5m])
+          ) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "Gluster {{ $labels.op }} errors ({{ $labels.errno }}) on {{ $labels.device }}"
+          description: >-
+            {{ $value | humanize }} failed GFAPI {{ $labels.op }} requests with
+            {{ $labels.errno }} in 5 minutes on {{ $labels.instance }}.
+
+      - alert: TcmuUnmapRejected
+        expr: increase(tcmu_unmap_rejected_total[1h]) > 0
+        labels:
+          severity: info
+        annotations:
+          summary: "An initiator sends {{ $labels.command }} to {{ $labels.device }} although UNMAP is disabled"
+          description: >-
+            The initiator ignores the Logical Block Provisioning VPD page.
+            The requests are rejected (UNMAP) or served without unmapping
+            (WRITE SAME), so the backing file stays allocated.
+
+  - name: lio
+    rules:
+      - alert: LioIscsiSessionFailures
+        expr: increase(lio_iscsi_failed_sessions_total[10m]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "iSCSI sessions fail on {{ $labels.target }} ({{ $labels.instance }})"
+
+      - alert: LioIscsiLoginFailures
+        expr: increase(lio_iscsi_login_failures_total[10m]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "iSCSI logins rejected ({{ $labels.reason }}) on {{ $labels.instance }}"
+
+      - alert: LioStatsStale
+        expr: time() - lio_stats_timestamp_seconds > 120
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "LIO statistics on {{ $labels.instance }} are stale"
+          description: "Check lio-stats.timer."

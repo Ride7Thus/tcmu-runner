@@ -1,0 +1,25 @@
+# Example Prometheus configuration for tcmu-runner gateways, see
+# docs/monitoring.md. Replace the targets with your gateway nodes.
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - tcmu-runner.rules.yml
+
+scrape_configs:
+  # node_exporter on every gateway serves the tcmu-runner and LIO
+  # metrics through its textfile collector.
+  - job_name: node
+    static_configs:
+      - targets:
+          - gateway-1.example.com:9100
+          - gateway-2.example.com:9100
+          - gateway-3.example.com:9100
+    relabel_configs:
+      # Use the host name without the port as instance label
+      - source_labels: [__address__]
+        regex: '([^:]+)(:[0-9]+)?'
+        target_label: instance
+        replacement: '$1'

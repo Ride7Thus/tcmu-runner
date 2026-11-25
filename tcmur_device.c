@@ -112,6 +112,7 @@ int __tcmu_reopen_dev(struct tcmu_device *dev, int retries)
 
 done:
 	rdev->flags &= ~TCMUR_DEV_FLAG_IN_RECOVERY;
+	tcmur_metrics_set_in_recovery(rdev->metrics, false);
 	pthread_mutex_unlock(&rdev->rdev_lock);
 
 	return ret;
@@ -132,6 +133,7 @@ int tcmu_reopen_dev(struct tcmu_device *dev, int retries)
 		return -EBUSY;
 	}
 	rdev->flags |= TCMUR_DEV_FLAG_IN_RECOVERY;
+	tcmur_metrics_set_in_recovery(rdev->metrics, true);
 	pthread_mutex_unlock(&rdev->rdev_lock);
 
 	return __tcmu_reopen_dev(dev, retries);
@@ -220,6 +222,7 @@ static bool __tcmu_notify_conn_lost(struct tcmu_device *dev)
 
 	if (!tcmu_add_dev_to_recovery_list(dev)) {
 		rdev->conn_lost_cnt++;
+		tcmur_metrics_event(rdev->metrics, TCMUR_METRICS_EVT_CONN_LOST);
 		return true;
 	}
 
@@ -253,8 +256,9 @@ static void __tcmu_notify_lock_lost(struct tcmu_device *dev)
 	struct tcmur_device *rdev = tcmu_dev_get_private(dev);
 
 	rdev->lock_lost = true;
-	rdev->lock_state = TCMUR_DEV_LOCK_UNLOCKED;
+	tcmur_dev_set_lock_state(rdev, TCMUR_DEV_LOCK_UNLOCKED);
 	rdev->lock_lost_cnt++;
+	tcmur_metrics_event(rdev->metrics, TCMUR_METRICS_EVT_LOCK_LOST);
 
 	tcmu_report_event(dev);
 }
@@ -297,7 +301,7 @@ void tcmu_release_dev_lock(struct tcmu_device *dev)
 
 	if (!(rdev->flags & TCMUR_DEV_FLAG_IS_OPEN)) {
 		tcmu_dev_dbg(dev, "Device is closed so unlock is not needed\n");
-		rdev->lock_state = TCMUR_DEV_LOCK_UNLOCKED;
+		tcmur_dev_set_lock_state(rdev, TCMUR_DEV_LOCK_UNLOCKED);
 		pthread_mutex_unlock(&rdev->rdev_lock);
 		return;
 	}
@@ -314,7 +318,7 @@ void tcmu_release_dev_lock(struct tcmu_device *dev)
 	 * is in a state where it cannot be fenced.
 	 */
 	pthread_mutex_lock(&rdev->rdev_lock);
-	rdev->lock_state = TCMUR_DEV_LOCK_UNLOCKED;
+	tcmur_dev_set_lock_state(rdev, TCMUR_DEV_LOCK_UNLOCKED);
 	pthread_mutex_unlock(&rdev->rdev_lock);
 }
 
@@ -482,20 +486,20 @@ done:
 	/* TODO: set UA based on bgly's patches */
 	pthread_mutex_lock(&rdev->rdev_lock);
 	if (ret != TCMU_STS_OK) {
-		rdev->lock_state = TCMUR_DEV_LOCK_UNLOCKED;
+		tcmur_dev_set_lock_state(rdev, TCMUR_DEV_LOCK_UNLOCKED);
 		tcmu_dev_info(dev, "Lock acquisition unsuccessful\n");
 	} else {
 		if (rdev->lock_state == TCMUR_DEV_LOCK_READ_LOCKING) {
-			rdev->lock_state = TCMUR_DEV_LOCK_READ_LOCKED;
+			tcmur_dev_set_lock_state(rdev, TCMUR_DEV_LOCK_READ_LOCKED);
 			tcmu_dev_info(dev, "Read lock acquisition successful\n");
 		} else if (rdev->lock_state == TCMUR_DEV_LOCK_WRITE_LOCKING) {
-			rdev->lock_state = TCMUR_DEV_LOCK_WRITE_LOCKED;
+			tcmur_dev_set_lock_state(rdev, TCMUR_DEV_LOCK_WRITE_LOCKED);
 			tcmu_dev_info(dev, "Write lock acquisition successful\n");
 		} else {
 			/*
 			 * For explicit transition it will always acquire the write lock.
 			 */
-			rdev->lock_state = TCMUR_DEV_LOCK_WRITE_LOCKED;
+			tcmur_dev_set_lock_state(rdev, TCMUR_DEV_LOCK_WRITE_LOCKED);
 			tcmu_dev_info(dev, "Write lock acquisition successful\n");
 		}
 	}
@@ -549,12 +553,27 @@ void *tcmur_dev_get_private(struct tcmu_device *dev)
 	return rdev->hm_private;
 }
 
+/* tcmur_metrics.c exports lock states by name in this order */
+_Static_assert(TCMUR_DEV_LOCK_UNKNOWN == 0 &&
+	       TCMUR_DEV_LOCK_WRITE_LOCKED == 5,
+	       "update lock_state_names in tcmur_metrics.c");
+
+void tcmur_dev_backend_error(struct tcmu_device *dev,
+			     enum tcmur_backend_op op, int err)
+{
+	struct tcmur_device *rdev = tcmu_dev_get_private(dev);
+
+	if (rdev)
+		tcmur_metrics_backend_error(rdev->metrics, op, err);
+}
+
 void tcmu_notify_cmd_timed_out(struct tcmu_device *dev)
 {
 	struct tcmur_device *rdev = tcmu_dev_get_private(dev);
 
 	pthread_mutex_lock(&rdev->rdev_lock);
 	rdev->cmd_timed_out_cnt++;
+	tcmur_metrics_event(rdev->metrics, TCMUR_METRICS_EVT_CMD_TIMED_OUT);
 	__tcmu_notify_conn_lost(dev);
 	pthread_mutex_unlock(&rdev->rdev_lock);
 

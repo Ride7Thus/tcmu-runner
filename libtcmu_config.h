@@ -23,6 +23,12 @@ struct tcmu_config {
 	char log_dir[PATH_MAX];
 	char def_log_dir[PATH_MAX];
 
+	/* Metrics export, read once at startup by tcmu-runner */
+	char metrics_file[PATH_MAX];
+	char def_metrics_file[PATH_MAX];
+	int metrics_interval;
+	int def_metrics_interval;
+
 	struct tcmulib_context *ctx;
 };
 

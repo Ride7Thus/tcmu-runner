@@ -54,6 +54,9 @@ struct tcmur_cmd {
 	struct timespec start_time;
 	bool timed_out;
 
+	/* CLOCK_MONOTONIC ns when fetched from the ring, 0 without metrics */
+	uint64_t metrics_start_ns;
+
 	/* callback to finish/continue command processing */
 	void (*done)(struct tcmu_device *dev, struct tcmur_cmd *cmd, int ret);
 };

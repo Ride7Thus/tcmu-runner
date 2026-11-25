@@ -135,6 +135,12 @@ Development header(s) for developing against libtcmu.
 %dir %{_datadir}/dbus-1/system-services/
 %{_datadir}/dbus-1/system-services/org.kernel.TCMUService1.service
 %{_unitdir}/tcmu-runner.service
+%{_unitdir}/lio-stats.service
+%{_unitdir}/lio-stats.timer
+%dir %{_libexecdir}/tcmu-runner/
+%{_libexecdir}/tcmu-runner/lio-stats.sh
+%dir %{_datadir}/tcmu-runner/
+%{_datadir}/tcmu-runner/monitoring/
 %dir %{_libdir}/tcmu-runner/
 %{_libdir}/tcmu-runner/*.so
 %{_mandir}/man8/*

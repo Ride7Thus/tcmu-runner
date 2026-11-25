@@ -435,7 +435,7 @@ static int alua_sync_state(struct tcmu_device *dev,
 				pthread_mutex_lock(&rdev->rdev_lock);
 				if (rdev->lock_state == TCMUR_DEV_LOCK_WRITE_LOCKED) {
 					tcmu_dev_dbg(dev, "Dropping lock\n");
-					rdev->lock_state = TCMUR_DEV_LOCK_UNLOCKED;
+					tcmur_dev_set_lock_state(rdev, TCMUR_DEV_LOCK_UNLOCKED);
 				}
 				pthread_mutex_unlock(&rdev->rdev_lock);
 			}
@@ -587,7 +587,7 @@ int alua_implicit_transition(struct tcmu_device *dev, struct tcmulib_cmd *cmd,
 		 *
 		 * Will not acquire the lock, just reopen the device.
 		 */
-		rdev->lock_state = TCMUR_DEV_LOCK_READ_LOCKING;
+		tcmur_dev_set_lock_state(rdev, TCMUR_DEV_LOCK_READ_LOCKING);
 	} else {
 		tcmu_dev_info(dev, "Starting write lock acquisition operation.\n");
 
@@ -600,7 +600,7 @@ int alua_implicit_transition(struct tcmu_device *dev, struct tcmulib_cmd *cmd,
 		 *
 		 * May will reopen the deivce and Will acquire the lock later.
 		 */
-		rdev->lock_state = TCMUR_DEV_LOCK_WRITE_LOCKING;
+		tcmur_dev_set_lock_state(rdev, TCMUR_DEV_LOCK_WRITE_LOCKING);
 	}
 
 	/*
@@ -610,7 +610,7 @@ int alua_implicit_transition(struct tcmu_device *dev, struct tcmulib_cmd *cmd,
 	if (tcmur_run_work(rdev->event_work, dev, alua_event_work_fn)) {
 		tcmu_dev_err(dev, "Could not start implicit transition thread:%s\n",
 			     strerror(errno));
-		rdev->lock_state = TCMUR_DEV_LOCK_UNLOCKED;
+		tcmur_dev_set_lock_state(rdev, TCMUR_DEV_LOCK_UNLOCKED);
 		ret = TCMU_STS_IMPL_TRANSITION_ERR;
 	} else {
 		ret = TCMU_STS_BUSY;

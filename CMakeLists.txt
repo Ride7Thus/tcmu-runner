@@ -101,6 +101,7 @@ add_executable(tcmu-runner
   tcmur_cmd_handler.c
   tcmur_aio.c
   tcmur_device.c
+  tcmur_metrics.c
   target.c
   alua.c
   scsi.c
@@ -328,5 +329,18 @@ install(FILES org.kernel.TCMUService1.service
 install(FILES tcmu-runner.conf DESTINATION /etc/dbus-1/system.d)
 if (SUPPORT_SYSTEMD)
   install(FILES tcmu-runner.service DESTINATION /usr/lib/systemd/system/)
+  install(FILES extra/monitoring/lio-stats.service extra/monitoring/lio-stats.timer
+    DESTINATION /usr/lib/systemd/system/)
 endif (SUPPORT_SYSTEMD)
+
+# Monitoring: LIO statistics exporter, Prometheus and Grafana examples
+install(PROGRAMS extra/monitoring/lio-stats.sh
+  DESTINATION ${CMAKE_INSTALL_LIBEXECDIR}/tcmu-runner)
+install(FILES
+  docs/monitoring.md
+  docs/node-exporter.md
+  extra/monitoring/prometheus.yml
+  extra/monitoring/tcmu-runner.rules.yml
+  extra/monitoring/grafana-dashboard.json
+  DESTINATION ${CMAKE_INSTALL_DATADIR}/tcmu-runner/monitoring)
 install(FILES tcmu-runner.8 DESTINATION ${CMAKE_INSTALL_PREFIX}/share/man/man8)

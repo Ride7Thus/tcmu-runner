@@ -14,6 +14,7 @@
 #include "ccan/list/list.h"
 
 #include "tcmur_aio.h"
+#include "tcmur_metrics.h"
 
 #define TCMU_INVALID_LOCK_TAG USHRT_MAX
 
@@ -85,7 +86,18 @@ struct tcmur_device {
 
 	pthread_spinlock_t cmds_list_lock; /* protects cmds_list */
 	struct list_head cmds_list;
+
+	/* NULL when metrics are disabled, see tcmur_metrics.h */
+	struct tcmur_dev_metrics *metrics;
 };
+
+/* Update lock_state and its metrics mirror, under rdev_lock as before */
+static inline void tcmur_dev_set_lock_state(struct tcmur_device *rdev,
+					    uint8_t state)
+{
+	rdev->lock_state = state;
+	tcmur_metrics_set_lock_state(rdev->metrics, state);
+}
 
 bool tcmu_dev_in_recovery(struct tcmu_device *dev);
 void tcmu_cancel_recovery(struct tcmu_device *dev);

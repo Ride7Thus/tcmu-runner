@@ -40,6 +40,10 @@ void tcmur_tcmulib_cmd_complete(struct tcmu_device *dev,
 	struct tcmur_cmd *tcmur_cmd = cmd->hm_private;
 	struct timespec curr_time;
 
+	tcmur_metrics_cmd_done(rdev->metrics, cmd->cdb, rc,
+			       tcmur_cmd->metrics_start_ns,
+			       tcmu_dev_get_block_size(dev));
+
 	pthread_cleanup_push(_cleanup_spin_lock, (void *)&rdev->cmds_list_lock);
 	pthread_spin_lock(&rdev->cmds_list_lock);
 
@@ -455,6 +459,7 @@ done:
 static int handle_unmap(struct tcmu_device *dev, struct tcmulib_cmd *origcmd)
 {
 	struct tcmur_handler *rhandler = tcmu_get_runner_handler(dev);
+	struct tcmur_device *rdev = tcmu_dev_get_private(dev);
 	uint8_t *cdb = origcmd->cdb;
 	size_t copied, data_length = tcmu_cdb_get_xfer_length(cdb);
 	uint8_t *par;
@@ -465,8 +470,11 @@ static int handle_unmap(struct tcmu_device *dev, struct tcmulib_cmd *origcmd)
 	 * A handler may disable UNMAP per device (e.g. glfs on dispersed
 	 * volumes); do not rely on initiators honouring VPD page B2h.
 	 */
-	if (!rhandler->unmap || !tcmu_dev_get_unmap_enabled(dev))
+	if (!rhandler->unmap || !tcmu_dev_get_unmap_enabled(dev)) {
+		tcmur_metrics_unmap_rejected(rdev->metrics,
+					     TCMUR_METRICS_UNMAP_REJECTED_UNMAP);
 		return TCMU_STS_INVALID_CMD;
+	}
 
 	/*
 	 * ANCHOR bit check
@@ -742,6 +750,7 @@ static int tcmur_writesame_work_fn(struct tcmu_device *dev, void *data)
 static int handle_writesame(struct tcmu_device *dev, struct tcmulib_cmd *cmd)
 {
 	struct tcmur_handler *rhandler = tcmu_get_runner_handler(dev);
+	struct tcmur_device *rdev = tcmu_dev_get_private(dev);
 	struct tcmur_cmd *tcmur_cmd = cmd->hm_private;
 	uint8_t *cdb = cmd->cdb;
 	uint32_t lba_cnt = tcmu_cdb_get_xfer_length(cdb);
@@ -767,11 +776,15 @@ static int handle_writesame(struct tcmu_device *dev, struct tcmulib_cmd *cmd)
 	 * If UNMAP is disabled for this device, WRITE SAME with the UNMAP bit
 	 * is served as a regular WRITE SAME, which SBC permits.
 	 */
-	if (rhandler->unmap && tcmu_dev_get_unmap_enabled(dev) &&
-	    (cmd->cdb[1] & 0x08)) {
-		ret = handle_unmap_in_writesame(dev, cmd);
-		if (ret != TCMU_STS_NOT_HANDLED)
-			return ret;
+	if (cmd->cdb[1] & 0x08) {
+		if (rhandler->unmap && tcmu_dev_get_unmap_enabled(dev)) {
+			ret = handle_unmap_in_writesame(dev, cmd);
+			if (ret != TCMU_STS_NOT_HANDLED)
+				return ret;
+		} else {
+			tcmur_metrics_unmap_rejected(rdev->metrics,
+				TCMUR_METRICS_UNMAP_REJECTED_WRITE_SAME);
+		}
 	}
 
 	if (rhandler->writesame) {
@@ -2335,6 +2348,7 @@ static int handle_try_passthrough(struct tcmu_device *dev,
 
 int tcmur_dev_update_size(struct tcmu_device *dev, uint64_t new_size)
 {
+	struct tcmur_device *rdev = tcmu_dev_get_private(dev);
 	uint64_t old_size_lbas;
 	int ret;
 
@@ -2345,10 +2359,13 @@ int tcmur_dev_update_size(struct tcmu_device *dev, uint64_t new_size)
 
 	tcmu_dev_set_num_lbas(dev, tcmu_byte_to_lba(dev, new_size));
 	ret = tcmu_cfgfs_dev_set_ctrl_u64(dev, "dev_size", new_size);
-	if (ret)
+	if (ret) {
 		tcmu_dev_set_num_lbas(dev, old_size_lbas);
-	else
+	} else {
 		tcmur_set_pending_ua(dev, TCMUR_UA_DEV_SIZE_CHANGED);
+		if (rdev)
+			tcmur_metrics_set_size(rdev->metrics, new_size);
+	}
 	return ret;
 }
 

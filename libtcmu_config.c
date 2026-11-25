@@ -191,6 +191,10 @@ static void tcmu_conf_set_options(struct tcmu_config *cfg)
 	TCMU_PARSE_CFG_STR(cfg, log_dir);
 	tcmu_resetup_log_file(cfg, cfg->log_dir);
 
+	/* set metrics options, only used at tcmu-runner startup */
+	TCMU_PARSE_CFG_STR(cfg, metrics_file);
+	TCMU_PARSE_CFG_INT(cfg, metrics_interval);
+
 	/* add your new config options */
 }
 
@@ -486,6 +490,10 @@ struct tcmu_config* tcmu_initialize_config(void)
 	snprintf(cfg->def_log_dir, PATH_MAX, "%s",
 		 log_dir ? log_dir : TCMU_LOG_DIR_DEFAULT);
 	cfg->def_log_level = TCMU_CONF_LOG_INFO;
+
+	/* Metrics are disabled unless metrics_file is set */
+	cfg->def_metrics_file[0] = '\0';
+	cfg->def_metrics_interval = 15;
 
 	return cfg;
 }

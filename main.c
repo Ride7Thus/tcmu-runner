@@ -44,11 +44,13 @@
 #include "tcmur_device.h"
 #include "tcmur_cmd_handler.h"
 #include "libtcmu.h"
+#include "libtcmu_priv.h"
 #include "tcmuhandler-generated.h"
 #include "version.h"
 #include "libtcmu_config.h"
 #include "libtcmu_log.h"
 #include "tcmur_work.h"
+#include "tcmur_metrics.h"
 
 #define TCMU_LOCK_FILE   "/run/tcmu.lock"
 
@@ -771,6 +773,8 @@ static void tcmur_tcmulib_cmd_start(struct tcmu_device *dev,
 	memset(tcmur_cmd, 0, sizeof(*tcmur_cmd));
 	tcmur_cmd->lib_cmd = cmd;
 	list_node_init(&tcmur_cmd->cmds_list_entry);
+	if (rdev->metrics)
+		tcmur_cmd->metrics_start_ns = tcmur_metrics_now_ns();
 
 	if (rdev->cmd_time_out) {
 		tcmur_cmd->start_time.tv_sec = curr_time->tv_sec;
@@ -977,6 +981,9 @@ static int dev_added(struct tcmu_device *dev)
 	list_node_init(&rdev->recovery_entry);
 	list_head_init(&rdev->cmds_list);
 	rdev->dev = dev;
+	rdev->metrics = tcmur_metrics_dev_alloc(rhandler->subtype,
+						dev->tcm_hba_name,
+						dev->tcm_dev_name);
 
 	parse_tcmu_runner_args(dev);
 
@@ -994,6 +1001,7 @@ static int dev_added(struct tcmu_device *dev)
 		goto free_rdev;
 	}
 	tcmu_dev_set_num_lbas(dev, tcmu_byte_to_lba(dev, dev_size));
+	tcmur_metrics_set_size(rdev->metrics, dev_size);
 
 	max_sectors = tcmu_cfgfs_dev_get_attr_int(dev, "hw_max_sectors");
 	if (max_sectors < 0)
@@ -1078,6 +1086,7 @@ static int dev_added(struct tcmu_device *dev)
 		goto cleanup_event_work;
 	}
 
+	tcmur_metrics_dev_register(rdev->metrics);
 	return 0;
 
 cleanup_event_work:
@@ -1097,6 +1106,7 @@ cleanup_caw_lock:
 cleanup_dev_lock:
 	pthread_spin_destroy(&rdev->cmds_list_lock);
 free_rdev:
+	tcmur_metrics_dev_free(rdev->metrics);
 	free(rdev);
 	return ret;
 }
@@ -1146,6 +1156,8 @@ static void dev_removed(struct tcmu_device *dev)
 	if (ret != 0)
 		tcmu_err("could not cleanup mailbox lock %d\n", ret);
 
+	/* All I/O is done, nothing can touch the metrics any more */
+	tcmur_metrics_dev_free(rdev->metrics);
 	free(rdev);
 
 	tcmu_dev_dbg(dev, "removed from tcmu-runner\n");
@@ -1380,6 +1392,12 @@ int main(int argc, char **argv)
 		darray_append(handlers, tmp_handler);
 	}
 
+	/*
+	 * Not fatal: tcmu-runner keeps serving I/O without metrics. The
+	 * settings are read once, changing them needs a restart.
+	 */
+	tcmur_metrics_start(tcmu_cfg->metrics_file, tcmu_cfg->metrics_interval);
+
 	tcmulib_context = tcmulib_initialize(handlers.item, handlers.size);
 	if (!tcmulib_context) {
 		tcmu_err("tcmulib_initialize failed\n");
@@ -1438,6 +1456,7 @@ loop_unref:
 		tcmu_unwatch_config(tcmu_cfg);
 	tcmulib_close(tcmulib_context);
 err_free_handlers:
+	tcmur_metrics_stop();
 	tcmur_unregister_all_dbus_handlers();
 
 	darray_foreach(handler, handlers) {
