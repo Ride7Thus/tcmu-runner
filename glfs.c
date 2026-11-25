@@ -109,6 +109,24 @@ typedef struct glfs_cbk_cookie {
 	} op;
 } glfs_cbk_cookie;
 
+/* Backend operation of a request, for tcmu_glfs_errors_total */
+static enum tcmur_backend_op glfs_metrics_op(int op)
+{
+	switch (op) {
+	case TCMU_GLFS_READ:
+		return TCMUR_BACKEND_OP_READ;
+	case TCMU_GLFS_FLUSH:
+		return TCMUR_BACKEND_OP_FLUSH;
+	case TCMU_GLFS_DISCARD:
+		return TCMUR_BACKEND_OP_DISCARD;
+	case TCMU_GLFS_WRITESAME:
+		return TCMUR_BACKEND_OP_ZEROFILL;
+	case TCMU_GLFS_WRITE:
+	default:
+		return TCMUR_BACKEND_OP_WRITE;
+	}
+}
+
 struct gluster_cacheconn {
 	char *volname;
 	gluster_hostdef *server;
@@ -639,6 +657,8 @@ static int tcmu_glfs_open(struct tcmu_device *dev, bool reopen)
 
 	gfsp->fs = tcmu_create_glfs_object(dev, config, &gfsp->hosts);
 	if (!gfsp->fs) {
+		tcmur_dev_backend_error(dev, TCMUR_BACKEND_OP_OPEN,
+					errno ? errno : EIO);
 		tcmu_dev_err(dev, "tcmu_create_glfs_object(config=%s) failed\n", config);
 		goto fail;
 	}
@@ -647,6 +667,7 @@ static int tcmu_glfs_open(struct tcmu_device *dev, bool reopen)
 
 	gfsp->gfd = glfs_open(gfsp->fs, gfsp->hosts->path, ALLOWED_BSOFLAGS);
 	if (!gfsp->gfd) {
+		tcmur_dev_backend_error(dev, TCMUR_BACKEND_OP_OPEN, errno);
 		tcmu_dev_err(dev, "glfs_open(vol=%s, file=%s) failed: %m\n",
 		             gfsp->hosts->volname, gfsp->hosts->path);
 		goto unref;
@@ -661,6 +682,8 @@ static int tcmu_glfs_open(struct tcmu_device *dev, bool reopen)
 				      "Mandatory locks are not enforced on vol=%s; lock based fencing disabled\n",
 				      gfsp->hosts->volname);
 		} else {
+			tcmur_dev_backend_error(dev, TCMUR_BACKEND_OP_OPEN,
+						errno);
 			tcmu_dev_err(dev,"glfs_fsetxattr failed: %m\n");
 			goto close;
 		}
@@ -669,6 +692,7 @@ static int tcmu_glfs_open(struct tcmu_device *dev, bool reopen)
 
 	ret = glfs_lstat(gfsp->fs, gfsp->hosts->path, &st);
 	if (ret) {
+		tcmur_dev_backend_error(dev, TCMUR_BACKEND_OP_OPEN, errno);
 		tcmu_dev_warn(dev, "glfs_lstat failed: %m\n");
 		goto close;
 	}
@@ -750,6 +774,14 @@ static void glfs_async_cbk(glfs_fd_t *fd, ssize_t ret, void *data)
 	size_t length = cookie->length;
 	int saved_errno = errno;
 	int err = -saved_errno;
+
+	if (ret < 0)
+		tcmur_dev_backend_error(dev, glfs_metrics_op(cookie->op),
+					saved_errno);
+	else if (ret != length &&
+		 !(cookie->op == TCMU_GLFS_READ && err == -ENOENT))
+		tcmur_dev_backend_error(dev, glfs_metrics_op(cookie->op),
+					TCMUR_METRICS_ERR_SHORT_IO);
 
 	if (ret < 0 && cookie->op == TCMU_GLFS_WRITESAME &&
 	    (err == -EOPNOTSUPP || err == -ENOTSUP || err == -ENOSYS)) {
@@ -862,6 +894,7 @@ static int tcmu_glfs_read(struct tcmu_device *dev,
 
 	if (glfs_preadv_async(state->gfd, iov, iov_cnt, offset, SEEK_SET,
 	                      glfs_async_cbk, cookie) < 0) {
+		tcmur_dev_backend_error(dev, TCMUR_BACKEND_OP_READ, errno);
 		tcmu_dev_err(dev, "glfs_preadv_async(vol=%s, file=%s) failed: %m\n",
 		             state->hosts->volname, state->hosts->path);
 		goto out;
@@ -894,6 +927,7 @@ static int tcmu_glfs_write(struct tcmu_device *dev,
 
 	if (glfs_pwritev_async(state->gfd, iov, iov_cnt, offset,
 	                       ALLOWED_BSOFLAGS, glfs_async_cbk, cookie) < 0) {
+		tcmur_dev_backend_error(dev, TCMUR_BACKEND_OP_WRITE, errno);
 		tcmu_dev_err(dev, "glfs_pwritev_async(vol=%s, file=%s) failed: %m\n",
 		             state->hosts->volname, state->hosts->path);
 		goto out;
@@ -958,6 +992,7 @@ static int tcmu_glfs_flush(struct tcmu_device *dev,
 	cookie->op = TCMU_GLFS_FLUSH;
 
 	if (glfs_fdatasync_async(state->gfd, glfs_async_cbk, cookie) < 0) {
+		tcmur_dev_backend_error(dev, TCMUR_BACKEND_OP_FLUSH, errno);
 		tcmu_dev_err(dev, "glfs_fdatasync_async(vol=%s, file=%s) failed: %m\n",
 		             state->hosts->volname, state->hosts->path);
 		goto out;
@@ -990,6 +1025,7 @@ static int tcmu_glfs_discard(struct tcmu_device *dev,
 
 	ret = glfs_discard_async(state->gfd, offset, length, glfs_async_cbk, cookie);
 	if (ret < 0) {
+		tcmur_dev_backend_error(dev, TCMUR_BACKEND_OP_DISCARD, errno);
 		tcmu_dev_err(dev, "glfs_discard_async(vol=%s, file=%s) failed: %m\n",
 		             state->hosts->volname, state->hosts->path);
 		goto out;
@@ -1037,6 +1073,8 @@ static int tcmu_glfs_writesame(struct tcmu_device *dev,
 	if (ret < 0) {
 		int saved_errno = errno;
 
+		tcmur_dev_backend_error(dev, TCMUR_BACKEND_OP_ZEROFILL,
+					saved_errno);
 		tcmu_dev_err(dev,
 			     "glfs_zerofill_async(vol=%s, file=%s, offset=%"PRIu64
 			     ", length=%"PRIu64") failed: errno=%d (%s)\n",
@@ -1082,8 +1120,10 @@ static int tcmu_glfs_lock(struct tcmu_device *dev, uint16_t tag)
 	lock.l_len = 0;
 
 	ret = glfs_file_lock(state->gfd, F_SETLK, &lock, GLFS_LK_MANDATORY);
-	if (ret)
+	if (ret) {
+		tcmur_dev_backend_error(dev, TCMUR_BACKEND_OP_LOCK, errno);
 		tcmu_dev_err(dev, "glfs_file_lock failed: %m\n");
+	}
 
 	return tcmu_glfs_to_sts(ret);
 }
@@ -1103,8 +1143,10 @@ static int tcmu_glfs_unlock(struct tcmu_device *dev)
 	lock.l_len = 0;
 
 	ret = glfs_file_lock(state->gfd, F_SETLK, &lock, GLFS_LK_MANDATORY);
-	if (ret)
+	if (ret) {
+		tcmur_dev_backend_error(dev, TCMUR_BACKEND_OP_LOCK, errno);
 		tcmu_dev_err(dev, "glfs_file_lock failed: %m\n");
+	}
 
 	return tcmu_glfs_to_sts(ret);
 }
