@@ -1,0 +1,12 @@
+[Unit]
+Description=Export LIO statistics for the node_exporter textfile collector
+Documentation=file:///usr/share/tcmu-runner/monitoring/node-exporter.md
+ConditionPathIsDirectory=/sys/kernel/config/target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/tcmu-runner/lio-stats.sh /var/lib/node_exporter/textfile_collector/lio.prom
+# Never compete with the storage path for CPU or disk
+Nice=19
+IOSchedulingClass=idle
+CPUSchedulingPolicy=idle
