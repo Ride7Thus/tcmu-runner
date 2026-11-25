@@ -42,6 +42,7 @@ void track_aio_request_start(struct tcmur_device *rdev)
 	pthread_mutex_lock(&aio_track->track_lock);
 
 	++aio_track->tracked_aio_ops;
+	tcmur_metrics_inflight_add(rdev->metrics, 1);
 
 	pthread_mutex_unlock(&aio_track->track_lock);
 	pthread_cleanup_pop(0);
@@ -57,6 +58,7 @@ void track_aio_request_finish(struct tcmur_device *rdev, int *wake_up)
 
 	assert(aio_track->tracked_aio_ops > 0);
 	--aio_track->tracked_aio_ops;
+	tcmur_metrics_inflight_add(rdev->metrics, -1);
 
 	if (wake_up) {
 		++aio_track->pending_wakeups;
